@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Yardkey</title>
+</head>
+<body onload="initialize()">
+    <script>
+        var port;
+        var uid = new Uint8Array(4);
+        var storedData = new Array(64);
+        var storedDataValid = 0;
+
+        function printLine(str) {
+            var rdiv = document.getElementById("results");
+
+            rdiv.innerText += str + "\n";
+        };
+
+        function clearAll() {
+            var rdiv = document.getElementById("results");
+
+            rdiv.innerText = "";
+        }
+
+        function constructFrame(data) {
+            const frame = new Uint8Array(8 + data.length);
+
+            // Preamble
+            frame[0] = 0x00;
+            frame[1] = 0x00;
+            frame[2] = 0xff;
+
+            // Length (LEN)
+            frame[3] = data.length + 1;
+
+            // Packet Length Checksum (LCS)
+            frame[4] = (0x100 - frame[3]) % 0x100;
+
+            // TFI
+            frame[5] = 0xd4
+
+            // Packet Data
+            frame.set(data, 6);
+
+            // Packet Data Checksum (DCS)
+            frame[frame.length-2] = (0x100 - frame.subarray(5, frame.length - 2).reduce((acc, val) => acc + val, 0)) % 0x100
+
+            // Postamble
+            frame[frame.length-1] = 0x00
+
+            // console.log("Frame: " + Array.from(frame, byte => byte.toString(16).padStart(2, '0')).join(' '))
+
+            return frame
+        }
+
+        function getDormakabaKey() {
+            const key = new Uint8Array(6);
+
+            const magic_table = new Uint8Array([
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0xF0, 0x57, 0xB3, 0x9E, 0xE3, 0xD8,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x96, 0x9D, 0x95, 0x4A, 0xC1, 0x57,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x8F, 0x43, 0x58, 0x0D, 0x2C, 0x9D,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0xFF, 0xCC, 0xE0, 0x05, 0x0C, 0x43,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x34, 0x1B, 0x15, 0xA6, 0x90, 0xCC,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x89, 0x58, 0x56, 0x12, 0xE7, 0x1B,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0xBB, 0x74, 0xB0, 0x95, 0x36, 0x58,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0xFB, 0x97, 0xF8, 0x4B, 0x5B, 0x74,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0xC9, 0xD1, 0x88, 0x35, 0x9F, 0x92,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x8F, 0x92, 0xE9, 0x7F, 0x58, 0x97,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x16, 0x6C, 0xA2, 0xB0, 0x9F, 0xD1,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x27, 0xDD, 0x93, 0x10, 0x1C, 0x6C,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0xDA, 0x3E, 0x3F, 0xD6, 0x49, 0xDD,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x58, 0xDD, 0xED, 0x07, 0x8E, 0x3E,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x5C, 0xD0, 0x05, 0xCF, 0xD9, 0x07,
+                0x00, 0x00, 0xAA, 0x00, 0x00, 0x00, 0x11, 0x8D, 0xD0, 0x01, 0x87, 0xD0
+            ]);
+
+            magic_byte = (uid[3] >> 4) + (uid[2] >> 4) + (uid[0] & 0x0F);
+            magic_index = (magic_byte & 0x0F) * 12 + 11;
+
+            key[0] = magic_byte;
+            key[1] = uid[0];
+            key[2] = uid[1];
+            key[3] = uid[2];
+            key[4] = uid[3];
+            key[5] = magic_byte;
+
+            carry_sum = 0;
+
+            for (let i = 5; i >= 0; i--) {
+                keysum = key[i] + magic_table[magic_index];
+                key[i] = (keysum & 0xFF) + carry_sum;
+                carry_sum = keysum >> 8;
+                magic_index--;
+                if (magic_index == 0) {
+                    break;
+                }
+            }
+
+            return key;
+        }
+
+        function crc16(data) {
+            const final_crc = new Uint8Array(data.length + 2);
+
+            crc = 0x6363; // Initial value for CRC-16
+
+            data.forEach(b => {
+                ch = b ^ (crc & 0xFF);
+                ch = (ch ^ (ch << 4)) & 0xFF;
+                crc = (crc >> 8) ^ (ch << 8) ^ (ch << 3) ^ (ch >> 4);
+            });
+
+            final_crc.set(data);
+            final_crc[data.length+0] = crc & 0xff;
+            final_crc[data.length+1] = (crc >> 8) & 0xff;
+
+            return final_crc;
+        }
+
+        async function sendWakeup() {
+            const writer = port.writable.getWriter();
+
+            console.log("Send wakeup");
+            const wakeup_data = new Uint8Array([0x55,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00]);
+            await writer.write(wakeup_data);
+
+            writer.releaseLock();
+        }
+
+        async function sendCmdWaitRsp(data) {
+            const writer = port.writable.getWriter();
+            const reader = port.readable.getReader();
+
+            // Send the command
+            await writer.write(constructFrame(data));
+
+            var ackRcvd = false;
+            var expBytes = 4;
+            var rcvdBytes = 0;
+            var rspData = [];
+
+            // Read data repeatedly until we receive everything expected
+            while (rcvdBytes < expBytes) {
+                const { value, done } = await reader.read();
+
+                value.forEach(byte => {
+                    //console.log(byte.toString(16).padStart(2, '0'))
+
+                    if (rcvdBytes > 0 || byte != 0x00) {
+                        // Skip past preamble
+                        if (!ackRcvd) {
+                            // Expect ACK frame
+                            if (rcvdBytes == 0 && byte != 0xff) console.log("Unexpected data in ack frame, preamble!");
+                            if (rcvdBytes == 1 && byte != 0x00) console.log("Unexpected data in ack frame, byte 1!");
+                            if (rcvdBytes == 2 && byte != 0xff) console.log("Unexpected data in ack frame, byte 2!");
+
+                            if (rcvdBytes == 3) {
+                                rcvdBytes = -1;
+                                ackRcvd = true;
+                            }
+                        } else {
+                            // Expect response frame
+                            if (rcvdBytes == 0 && byte != 0xff) console.log("Unexpected data in rsp frame, preamble!");
+                            if (rcvdBytes == 1) expBytes += byte;
+                            if (rcvdBytes == 3 && byte != 0xd5) console.log("Unexpected data in rsp frame, tfi!");
+                            if (rcvdBytes > 3 && rcvdBytes < (expBytes-1)) rspData.push(byte);
+                        }
+                        rcvdBytes++;
+                    }
+                });
+            }
+
+            writer.releaseLock();
+            reader.releaseLock();
+
+            const rspDataBytes = new Uint8Array(rspData);
+            console.log("Rcvd: " + Array.from(rspDataBytes, byte => byte.toString(16).padStart(2, '0')).join(' '))
+            return rspDataBytes;
+        }
+
+        function initialize() {
+            let box = document.getElementById("main");
+
+            if ("serial" in navigator) {
+                // The Web Serial API is supported.
+            } else {
+                box.innerText = "Only Google Chrome is supported.";
+            }
+
+            document.getElementById('connect_button').addEventListener('click', async () => {
+                // Prompt user to select any serial port.
+                port = await navigator.serial.requestPort();
+
+                const { usbProductId, usbVendorId } = port.getInfo();
+
+                await port.open({ baudRate: 115200 });
+
+                // Turn on Data Terminal Ready (DTR) signal.
+                await port.setSignals({ dataTerminalReady: true });
+            });
+
+            document.getElementById('read_button').addEventListener('click', async () => {
+                var rsp;
+
+                clearAll();
+
+                await sendWakeup();
+
+                console.log("Send SAMConfiguration");
+                rsp = await sendCmdWaitRsp([0x14, 0x01]);
+
+                console.log("Send inListPassiveTarget");
+                rsp = await sendCmdWaitRsp([0x4a, 0x01, 0x00]);
+
+                uid.set(rsp.subarray(7, 11), 0);
+
+                printLine("Found card with UID " + Array.from(uid, byte => byte.toString(16).padStart(2, '0')).join(' '));
+
+                const magicKey = new Uint8Array(getDormakabaKey());
+                printLine("Magic key " + Array.from(magicKey, byte => byte.toString(16).padStart(2, '0')).join(' '));
+
+                for (i = 0; i < 64; i++) {
+                    const key = new Uint8Array(6);
+                    const data = new Uint8Array(16);
+
+                    // Determine which key to use
+                    if (i >= 4 && i <= 7) {
+                        // Sector 1 always uses this key
+                        key.set([0x2a, 0x2c, 0x13, 0xcc, 0x24, 0x2a]);
+                    } else if (i >= 8 && i <= 11) {
+                        // Sector 2 always uses this key
+                        key.set([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+                    } else {
+                        // Other sectors uses key generated from UID
+                        key.set(magicKey);
+                    }
+
+                    // Authenticate
+                    console.log("Send Authenticate");
+                    rsp = await sendCmdWaitRsp([0x40, 0x01, 0x60, i, key[0], key[1], key[2], key[3], key[4], key[5], uid[0], uid[1], uid[2], uid[3]]);
+
+                    // Read data
+                    console.log("Send Read");
+                    rsp = await sendCmdWaitRsp([0x40, 0x01, 0x30, i]);
+
+                    data.set(rsp.subarray(2));
+
+                    if (i % 4 == 3) {
+                        // The read data will have zeros where the key is stored. Replace with key.
+                        data.set(key);
+                    }
+                    storedData[i] = data;
+
+                    printLine("Block " + i + ": " + Array.from(data, byte => byte.toString(16).padStart(2, '0')).join(' '))
+                }
+
+                storedDataValid = 1;
+            });
+
+            document.getElementById('write_button').addEventListener('click', async () => {
+                var rsp;
+
+                clearAll();
+
+                if (storedDataValid) {
+                    console.log("Send inListPassiveTarget");
+                    rsp = await sendCmdWaitRsp([0x4a, 0x01, 0x00]);
+
+                    uid.set(rsp.subarray(7, 11), 0);
+
+                    printLine("Found card with UID " + Array.from(uid, byte => byte.toString(16).padStart(2, '0')).join(' '));
+
+                    for (i = 1; i < 64; i++) {
+                        // Authenticate
+                        rsp = await sendCmdWaitRsp([0x40, 0x01, 0x61, i, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, uid[0], uid[1], uid[2], uid[3]]);
+                        console.log("Rcvd: " + Array.from(rsp, byte => byte.toString(16).padStart(2, '0')).join(' '))
+
+                        // Write data
+                        const wdata = new Uint8Array(20);
+
+                        wdata.set([0x40, 0x01, 0xa0, i]);
+                        wdata.set(storedData[i], 4);
+
+                        rsp = await sendCmdWaitRsp(wdata);
+                        console.log("Rcvd: " + Array.from(rsp, byte => byte.toString(16).padStart(2, '0')).join(' '))
+
+                        printLine("Write " + i + ": " + Array.from(wdata, byte => byte.toString(16).padStart(2, '0')).join(' '))
+                    }
+
+                    // Write block 0 using special commands
+                    console.log("Send inListPassiveTarget");
+                    rsp = await sendCmdWaitRsp([0x4a, 0x01, 0x00]);
+
+                    const wreg = new Uint8Array([0x08, 0x63, 0x02, 0x00, 0x63, 0x03, 0x00]);
+                    rsp = await sendCmdWaitRsp(wreg);
+
+                    const whalt = new Uint8Array([0x42, 0x50, 0x00]);
+                    rsp = await sendCmdWaitRsp(whalt);
+
+                    const wseven = new Uint8Array([0x08, 0x63, 0x3d, 0x07]);
+                    rsp = await sendCmdWaitRsp(wseven);
+
+                    console.log("Unlock 1");
+                    const wunlock = new Uint8Array([0x42, 0x40]);
+                    rsp = await sendCmdWaitRsp(wunlock);
+
+                    wseven[3] = 0x0;
+                    rsp = await sendCmdWaitRsp(wseven);
+
+                    console.log("Unlock 2");
+                    wunlock[1] = 0x43;
+                    rsp = await sendCmdWaitRsp(wunlock);
+
+                    const wcmd = new Uint8Array(5);
+                    wcmd[0] = 0x42;
+                    wcmd.set(crc16([0xa0, 0x00]), 1);
+                    rsp = await sendCmdWaitRsp(wcmd);
+
+                    const wdata = new Uint8Array(19);
+                    wdata[0] = 0x42;
+                    wdata.set(crc16(storedData[0]), 1);
+                    printLine("Writing block 0: " + ": " + Array.from(wdata, byte => byte.toString(16).padStart(2, '0')).join(' '))
+                    rsp = await sendCmdWaitRsp(wdata);
+
+                    printLine("Done!");
+
+                } else {
+                    printLine("Must read first");
+                }
+            });
+        }
+
+    </script>
+
+    <div id="main">
+        <button id="connect_button">Connect to USB device</button>
+        <button id="read_button">Read data</button>
+        <button id="write_button">Write data</button>
+    </div>
+
+    <div id="results" style="margin-top:10pt; font-family: monospace;"></div>
+
+</body>
+</html>
